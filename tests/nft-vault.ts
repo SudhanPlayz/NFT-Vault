@@ -20,43 +20,12 @@ describe("nft-vault", () => {
   const program = anchor.workspace.NftVault as Program<NftVault>;
   const payer = loadKeypair();
 
-  it("Initializes the vault", async () => {
-    const [vaultPda, vaultBump] = PublicKey.findProgramAddressSync(
-      [Buffer.from("vault")],
-      program.programId
-    );
-
-    const vaultAuthority = Keypair.generate();
-
-    console.log("vaultPda", vaultPda.toString())
-    console.log("vaultBump", vaultBump)
-    console.log("vaultAuthority", vaultAuthority.publicKey.toString())
-    console.log("payer", payer.publicKey.toString())
-
-    await provider.connection.requestAirdrop(payer.publicKey, 5 * LAMPORTS_PER_SOL)
-    await provider.connection.requestAirdrop(vaultAuthority.publicKey, 5 * LAMPORTS_PER_SOL)
-
-    await program.methods.initializeVault().accounts({
-      vault: vaultPda,
-      authority: vaultAuthority.publicKey,
-      systemProgram: SystemProgram.programId,
-    }).signers([vaultAuthority]).rpc()
-
-    const vaultAccount = await program.account.vault.fetch(vaultPda);
-    expect(vaultAccount.authority.toString()).to.equal(provider.wallet.publicKey.toString());
-    expect(vaultAccount.nftCount).to.equal(0);
-    expect(vaultAccount.totalRent).to.equal(0);
-  })
-});
-
-/**
- * let vaultPda: PublicKey;
+  let vaultPda: PublicKey;
   let vaultBump: number;
   let mintKeypair: Keypair;
   let userTokenAccount: PublicKey;
   let vaultTokenAccount: PublicKey;
 
-  const payer = Keypair.generate();
   const mintAuthority = Keypair.generate();
   const vaultAuthority = Keypair.generate();
 
@@ -233,4 +202,4 @@ describe("nft-vault", () => {
     const userTokenBalance = await provider.connection.getTokenAccountBalance(userTokenAccount);
     expect(userTokenBalance.value.uiAmount).to.equal(1);
   });
- */
+});
