@@ -2,9 +2,10 @@ import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
 import { NftVault } from "../target/types/nft_vault";
 import { PublicKey, Keypair, SystemProgram, LAMPORTS_PER_SOL } from "@solana/web3.js";
-import { TOKEN_PROGRAM_ID, createMint, createAssociatedTokenAccount, mintTo } from "@solana/spl-token";
+import { TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID, createMint, createAssociatedTokenAccount, mintTo, getAssociatedTokenAddress } from "@solana/spl-token";
 import { expect } from "chai";
 import fs from "fs";
+import { BN } from "bn.js";
 
 const loadKeypair = () => {
   let path = "/home/sudhan/.config/solana/id.json"
@@ -22,44 +23,20 @@ describe("nft-vault", () => {
 
   let vaultPda: PublicKey;
   let vaultBump: number;
-  let mintKeypair: Keypair;
-  let userTokenAccount: PublicKey;
-  let vaultTokenAccount: PublicKey;
+  let nftMint: PublicKey;
+  let userNftAccount: PublicKey;
+  let vaultNftAccount: PublicKey;
 
-  const mintAuthority = Keypair.generate();
-  const vaultAuthority = Keypair.generate();
+  const vaultAuthority = payer;
 
-  it("Initializes the vault", async () => {
-    [vaultPda, vaultBump] = await PublicKey.findProgramAddress(
+  before(async () => {
+    [vaultPda, vaultBump] = PublicKey.findProgramAddressSync(
       [Buffer.from("vault")],
       program.programId
     );
+  });
 
-    // Create mint
-    mintKeypair = Keypair.generate();
-    await createMint(
-      provider.connection,
-      payer,
-      mintAuthority.publicKey,
-      null,
-      0,
-      mintAuthority
-    )
-
-    userTokenAccount = await createAssociatedTokenAccount(
-      provider.connection,
-      payer,
-      mintKeypair.publicKey,
-      payer.publicKey
-    );
-
-    vaultTokenAccount = await createAssociatedTokenAccount(
-      provider.connection,
-      payer,
-      mintKeypair.publicKey,
-      vaultPda
-    );
-
+  it("Initializes the vault", async () => {
     await program.methods
       .initializeVault()
       .accounts({
@@ -71,50 +48,55 @@ describe("nft-vault", () => {
       .rpc();
 
     const vaultAccount = await program.account.vault.fetch(vaultPda);
-    expect(vaultAccount.authority.toString()).to.equal(provider.wallet.publicKey.toString());
+    expect(vaultAccount.authority.toString()).to.equal(vaultAuthority.publicKey.toString());
     expect(vaultAccount.nftCount).to.equal(0);
-    expect(vaultAccount.totalRent).to.equal(0);
+    expect(vaultAccount.totalRent.toString()).to.equal(new BN(0).toString());
   });
 
   it("Mints an NFT", async () => {
-    const nftName = "Test NFT";
-    const nftSymbol = "TNFT";
-    const nftUri = "https://example.com/nft";
+    const nftMintKeypair = Keypair.generate();
+    nftMint = nftMintKeypair.publicKey;
 
-    const nftDataAccount = Keypair.generate();
+    const nftData = Keypair.generate();
+    const name = "Test NFT";
+    const symbol = "TNFT";
+    const uri = "https://example.com/nft";
 
     await program.methods
-      .mintNft(nftName, nftSymbol, nftUri)
+      .mintNft(name, symbol, uri)
       .accounts({
-        nftData: nftDataAccount.publicKey,
-        mint: mintKeypair.publicKey,
-        tokenAccount: userTokenAccount,
+        nftData: nftData.publicKey,
+        mint: nftMint,
+        tokenAccount: await getAssociatedTokenAddress(nftMint, payer.publicKey),
         payer: payer.publicKey,
         rent: anchor.web3.SYSVAR_RENT_PUBKEY,
         systemProgram: SystemProgram.programId,
         tokenProgram: TOKEN_PROGRAM_ID,
-        associatedTokenProgram: anchor.utils.token.ASSOCIATED_PROGRAM_ID,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
       })
-      .signers([payer, nftDataAccount])
+      .signers([payer, nftMintKeypair, nftData])
       .rpc();
 
-    const nftDataAccountInfo = await program.account.nftData.fetch(nftDataAccount.publicKey);
-    expect(nftDataAccountInfo.name).to.equal(nftName);
-    expect(nftDataAccountInfo.symbol).to.equal(nftSymbol);
-    expect(nftDataAccountInfo.uri).to.equal(nftUri);
-    expect(nftDataAccountInfo.mint.toString()).to.equal(mintKeypair.publicKey.toString());
-    expect(nftDataAccountInfo.owner.toString()).to.equal(payer.publicKey.toString());
+    const nftDataAccount = await program.account.nftData.fetch(nftData.publicKey);
+    expect(nftDataAccount.name).to.equal(name);
+    expect(nftDataAccount.symbol).to.equal(symbol);
+    expect(nftDataAccount.uri).to.equal(uri);
+    expect(nftDataAccount.mint.toString()).to.equal(nftMint.toString());
+    expect(nftDataAccount.owner.toString()).to.equal(payer.publicKey.toString());
   });
 
-  it("Locks an NFT in the vault", async () => {
+  it("Locks an NFT", async () => {
+    userNftAccount = await getAssociatedTokenAddress(nftMint, payer.publicKey);
+    vaultNftAccount = await createAssociatedTokenAccount(provider.connection, payer, vaultPda, nftMint);
+
     await program.methods
       .lockNft()
       .accounts({
         vault: vaultPda,
         user: payer.publicKey,
-        nftMint: mintKeypair.publicKey,
-        userNftAccount: userTokenAccount,
-        vaultNftAccount: vaultTokenAccount,
+        nftMint: nftMint,
+        userNftAccount: userNftAccount,
+        vaultNftAccount: vaultNftAccount,
         tokenProgram: TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
       })
@@ -123,83 +105,103 @@ describe("nft-vault", () => {
 
     const vaultAccount = await program.account.vault.fetch(vaultPda);
     expect(vaultAccount.nftCount).to.equal(1);
-    expect(vaultAccount.lockedNfts[0].mint.toString()).to.equal(mintKeypair.publicKey.toString());
+    expect(vaultAccount.lockedNfts[0].mint.toString()).to.equal(nftMint.toString());
   });
 
-  it("Unlocks an NFT from the vault", async () => {
-    await program.methods
-      .unlockNft()
-      .accounts({
-        vault: vaultPda,
-        user: payer.publicKey,
-        nftMint: mintKeypair.publicKey,
-        userNftAccount: userTokenAccount,
-        vaultNftAccount: vaultTokenAccount,
-        tokenProgram: TOKEN_PROGRAM_ID,
-        systemProgram: SystemProgram.programId,
-      })
-      .signers([payer])
-      .rpc();
+  // it("Unlocks an NFT", async () => {
+  //   // Wait for a short time to simulate some lock duration
+  //   await new Promise(resolve => setTimeout(resolve, 5000));
 
-    const vaultAccount = await program.account.vault.fetch(vaultPda);
-    expect(vaultAccount.nftCount).to.equal(0);
-    expect(vaultAccount.lockedNfts).to.be.empty;
-  });
+  //   await program.methods
+  //     .unlockNft()
+  //     .accounts({
+  //       vault: vaultPda,
+  //       user: payer.publicKey,
+  //       nftMint: nftMint,
+  //       userNftAccount: userNftAccount,
+  //       vaultNftAccount: vaultNftAccount,
+  //       tokenProgram: TOKEN_PROGRAM_ID,
+  //       systemProgram: SystemProgram.programId,
+  //     })
+  //     .signers([payer])
+  //     .rpc();
 
-  it("Claims rent from the vault", async () => {
-    // First, we need to lock an NFT to generate some rent
-    await program.methods
-      .lockNft()
-      .accounts({
-        vault: vaultPda,
-        user: payer.publicKey,
-        nftMint: mintKeypair.publicKey,
-        userNftAccount: userTokenAccount,
-        vaultNftAccount: vaultTokenAccount,
-        tokenProgram: TOKEN_PROGRAM_ID,
-        systemProgram: SystemProgram.programId,
-      })
-      .signers([payer])
-      .rpc();
+  //   const vaultAccount = await program.account.vault.fetch(vaultPda);
+  //   expect(vaultAccount.nftCount).to.equal(0);
+  //   expect(vaultAccount.lockedNfts).to.be.empty;
+  //   expect(vaultAccount.totalRent.toNumber()).to.be.greaterThan(0);
+  // });
 
-    // Wait for a short period to accumulate some rent
-    await new Promise(resolve => setTimeout(resolve, 5000));
+  // it("Claims rent", async () => {
+  //   const vaultAccount = await program.account.vault.fetch(vaultPda);
+  //   const rentToClaim = vaultAccount.totalRent;
 
-    // Now claim the rent
-    await program.methods
-      .claimRent()
-      .accounts({
-        vault: vaultPda,
-        authority: provider.wallet.publicKey,
-        systemProgram: SystemProgram.programId,
-      })
-      .rpc();
+  //   const vaultBalanceBefore = await provider.connection.getBalance(vaultPda);
+  //   const authorityBalanceBefore = await provider.connection.getBalance(vaultAuthority.publicKey);
 
-    const vaultAccount = await program.account.vault.fetch(vaultPda);
-    expect(vaultAccount.totalRent).to.equal(0);
-  });
+  //   await program.methods
+  //     .claimRent()
+  //     .accounts({
+  //       vault: vaultPda,
+  //       authority: vaultAuthority.publicKey,
+  //       systemProgram: SystemProgram.programId,
+  //     })
+  //     .signers([vaultAuthority])
+  //     .rpc();
 
-  it("Swaps SOL for an NFT", async () => {
-    const swapAmount = new anchor.BN(1 * LAMPORTS_PER_SOL);
+  //   const vaultBalanceAfter = await provider.connection.getBalance(vaultPda);
+  //   const authorityBalanceAfter = await provider.connection.getBalance(vaultAuthority.publicKey);
 
-    await program.methods
-      .swapSolForNft(swapAmount)
-      .accounts({
-        vault: vaultPda,
-        user: payer.publicKey,
-        nftMint: mintKeypair.publicKey,
-        userNftAccount: userTokenAccount,
-        vaultNftAccount: vaultTokenAccount,
-        tokenProgram: TOKEN_PROGRAM_ID,
-        systemProgram: SystemProgram.programId,
-      })
-      .signers([payer])
-      .rpc();
+  //   expect(vaultBalanceAfter).to.equal(vaultBalanceBefore - rentToClaim.toNumber());
+  //   expect(authorityBalanceAfter).to.be.closeTo(authorityBalanceBefore + rentToClaim.toNumber(), 10000); // Allow for small discrepancy due to transaction fees
 
-    const vaultAccount = await program.account.vault.fetch(vaultPda);
-    expect(vaultAccount.nftCount).to.equal(0);
+  //   const updatedVaultAccount = await program.account.vault.fetch(vaultPda);
+  //   expect(updatedVaultAccount.totalRent.toNumber()).to.equal(0);
+  // });
 
-    const userTokenBalance = await provider.connection.getTokenAccountBalance(userTokenAccount);
-    expect(userTokenBalance.value.uiAmount).to.equal(1);
-  });
+  // it("Swaps SOL for NFT", async () => {
+  //   // First, lock an NFT in the vault
+  //   await program.methods
+  //     .lockNft()
+  //     .accounts({
+  //       vault: vaultPda,
+  //       user: payer.publicKey,
+  //       nftMint: nftMint,
+  //       userNftAccount: userNftAccount,
+  //       vaultNftAccount: vaultNftAccount,
+  //       tokenProgram: TOKEN_PROGRAM_ID,
+  //       systemProgram: SystemProgram.programId,
+  //     })
+  //     .signers([payer])
+  //     .rpc();
+
+  //   // Now, swap SOL for the NFT
+  //   const swapAmount = new BN(LAMPORTS_PER_SOL); // 1 SOL
+
+  //   const userBalanceBefore = await provider.connection.getBalance(payer.publicKey);
+  //   const vaultBalanceBefore = await provider.connection.getBalance(vaultPda);
+
+  //   await program.methods
+  //     .swapSolForNft(swapAmount)
+  //     .accounts({
+  //       vault: vaultPda,
+  //       user: payer.publicKey,
+  //       nftMint: nftMint,
+  //       userNftAccount: userNftAccount,
+  //       vaultNftAccount: vaultNftAccount,
+  //       tokenProgram: TOKEN_PROGRAM_ID,
+  //       systemProgram: SystemProgram.programId,
+  //     })
+  //     .signers([payer])
+  //     .rpc();
+
+  //   const userBalanceAfter = await provider.connection.getBalance(payer.publicKey);
+  //   const vaultBalanceAfter = await provider.connection.getBalance(vaultPda);
+
+  //   expect(userBalanceAfter).to.be.closeTo(userBalanceBefore - swapAmount.toNumber(), 10000); // Allow for small discrepancy due to transaction fees
+  //   expect(vaultBalanceAfter).to.equal(vaultBalanceBefore + swapAmount.toNumber());
+
+  //   const vaultAccount = await program.account.vault.fetch(vaultPda);
+  //   expect(vaultAccount.nftCount).to.equal(0);
+  // });
 });

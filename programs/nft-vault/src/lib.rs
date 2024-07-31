@@ -158,7 +158,7 @@ pub mod nft_vault {
 
 #[derive(Accounts)]
 pub struct InitializeVault<'info> {
-    #[account(init, payer = authority, space = 8 + 32 + 4 + 8 + 1000)]
+    #[account(init, payer = authority, space = 8 + 32 + 4 + 8 + 1000, seeds = [b"vault"], bump)]
     pub vault: Account<'info, Vault>,
     #[account(mut)]
     pub authority: Signer<'info>,
