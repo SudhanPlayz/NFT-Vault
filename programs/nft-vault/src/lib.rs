@@ -81,13 +81,16 @@ pub mod nft_vault {
         vault.nft_count -= 1;
         vault.total_rent += rent;
 
+        let seeds = &[b"vault".as_ref(), &[ctx.bumps.vault]];
+        let signer = &[&seeds[..]];
+
         let cpi_accounts = token::Transfer {
             from: ctx.accounts.vault_nft_account.to_account_info(),
             to: ctx.accounts.user_nft_account.to_account_info(),
             authority: ctx.accounts.vault.to_account_info(),
         };
         let cpi_program = ctx.accounts.token_program.to_account_info();
-        let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
+        let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, signer);
         token::transfer(cpi_ctx, 1)?;
 
         Ok(())
@@ -97,21 +100,19 @@ pub mod nft_vault {
         let vault = &mut ctx.accounts.vault;
         let rent_to_claim = vault.total_rent;
         vault.total_rent = 0;
-
-        let ix = anchor_lang::solana_program::system_instruction::transfer(
-            &ctx.accounts.vault.key(),
-            &ctx.accounts.authority.key(),
-            rent_to_claim,
-        );
-        anchor_lang::solana_program::program::invoke(
-            &ix,
-            &[
-                ctx.accounts.vault.to_account_info(),
-                ctx.accounts.authority.to_account_info(),
-                ctx.accounts.system_program.to_account_info(),
-            ],
-        )?;
-
+    
+        let seeds = &[b"vault".as_ref(), &[ctx.bumps.vault]];
+        let signer = [&seeds[..]];
+    
+        let cpi_accounts = anchor_lang::system_program::Transfer {
+            from: ctx.accounts.vault.to_account_info(),
+            to: ctx.accounts.authority.to_account_info(),
+        };
+        let cpi_program = ctx.accounts.system_program.to_account_info();
+        let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, &signer);
+    
+        anchor_lang::system_program::transfer(cpi_ctx, rent_to_claim)?;
+    
         Ok(())
     }
 
@@ -201,22 +202,37 @@ pub struct LockNFT<'info> {
     pub nft_mint: Account<'info, Mint>,
     #[account(mut)]
     pub user_nft_account: Account<'info, TokenAccount>,
-    #[account(mut)]
+    #[account(
+        init_if_needed,
+        payer = user,
+        associated_token::mint = nft_mint,
+        associated_token::authority = vault
+    )]
     pub vault_nft_account: Account<'info, TokenAccount>,
     pub token_program: Program<'info, Token>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
     pub system_program: Program<'info, System>,
+    pub rent: Sysvar<'info, Rent>,
 }
 
 #[derive(Accounts)]
 pub struct UnlockNFT<'info> {
-    #[account(mut)]
+    #[account(
+        mut,
+        seeds = [b"vault"],
+        bump,
+    )]
     pub vault: Account<'info, Vault>,
     #[account(mut)]
     pub user: Signer<'info>,
     pub nft_mint: Account<'info, Mint>,
     #[account(mut)]
     pub user_nft_account: Account<'info, TokenAccount>,
-    #[account(mut)]
+    #[account(
+        mut,
+        associated_token::mint = nft_mint,
+        associated_token::authority = vault
+    )]
     pub vault_nft_account: Account<'info, TokenAccount>,
     pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
@@ -224,7 +240,12 @@ pub struct UnlockNFT<'info> {
 
 #[derive(Accounts)]
 pub struct ClaimRent<'info> {
-    #[account(mut, has_one = authority)]
+    #[account(
+        mut,
+        seeds = [b"vault"],
+        bump,
+        has_one = authority
+    )]
     pub vault: Account<'info, Vault>,
     #[account(mut)]
     pub authority: Signer<'info>,
